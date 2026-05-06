@@ -78,7 +78,7 @@ async function startScrape(e) {
         area: document.getElementById('scrape-area').value.trim(),
         module: document.getElementById('scrape-module').value,
         max_results: parseInt(document.getElementById('scrape-max').value) || 50,
-        find_owners: document.getElementById('scrape-owners').checked,
+        find_owners: true,
     };
 
     try {
@@ -249,6 +249,7 @@ async function loadLeads() {
                 </td>
                 <td>${esc(l.category || '—')}</td>
                 <td>${l.phone ? `<a href="tel:${esc(l.phone)}" class="link">${esc(l.phone)}</a>` : '—'}</td>
+                <td>${l.email ? `<a href="mailto:${esc(l.email)}" class="link truncate" title="${esc(l.email)}">${esc(l.email)}</a>` : '<span style="color:var(--text-muted)">—</span>'}</td>
                 <td>${l.website ? `<a href="${esc(l.website)}" target="_blank" class="link truncate" title="${esc(l.website)}">${truncUrl(l.website)}</a>` : '<span style="color:var(--red)">None</span>'}</td>
                 <td>${scoreBar(l.overall_score)}</td>
                 <td>${typeBadge(l.lead_type)}</td>
@@ -267,7 +268,7 @@ async function loadLeads() {
                     </button>
                 </td>
             </tr>
-        `).join('') || '<tr><td colspan="8" class="empty-state"><p>No leads found</p></td></tr>';
+        `).join('') || '<tr><td colspan="9" class="empty-state"><p>No leads found</p></td></tr>';
 
         renderPagination(data);
     } catch (e) {
@@ -343,10 +344,15 @@ async function openLead(id) {
         document.getElementById('modal-title').textContent = lead.business_name;
         const body = document.getElementById('modal-body');
 
+        const wq = audit.website_quality || {};
+        const contactEmails = audit.contact_emails || [];
+        const ownerSocials = lead.owner_social ? (() => { try { return JSON.parse(lead.owner_social); } catch { return {}; } })() : {};
+
         body.innerHTML = `
             <div class="tabs">
                 <div class="tab active" onclick="switchTab(this, 'tab-details-${id}')">Details</div>
                 <div class="tab" onclick="switchTab(this, 'tab-audit-${id}')">Audit Report</div>
+                <div class="tab" onclick="switchTab(this, 'tab-website-${id}')">Website Analysis</div>
                 <div class="tab" onclick="switchTab(this, 'tab-activity-${id}')">Activity</div>
                 <div class="tab" onclick="switchTab(this, 'tab-edit-${id}')">Edit</div>
             </div>
@@ -357,16 +363,40 @@ async function openLead(id) {
                     <div class="detail-item"><label>Business Name</label><span>${esc(lead.business_name)}</span></div>
                     <div class="detail-item"><label>Category</label><span>${esc(lead.category || '—')}</span></div>
                     <div class="detail-item"><label>Phone</label><span>${lead.phone ? `<a href="tel:${esc(lead.phone)}">${esc(lead.phone)}</a>` : '—'}</span></div>
-                    <div class="detail-item"><label>Email</label><span>${lead.email ? `<a href="mailto:${esc(lead.email)}">${esc(lead.email)}</a>` : '—'}</span></div>
+                    <div class="detail-item"><label>Email</label><span>${lead.email ? `<a href="mailto:${esc(lead.email)}">${esc(lead.email)}</a>` : '<span style="color:var(--text-muted)">Not found</span>'}</span></div>
                     <div class="detail-item"><label>Website</label><span>${lead.website ? `<a href="${esc(lead.website)}" target="_blank">${esc(lead.website)}</a>` : '<span style="color:var(--red)">No website</span>'}</span></div>
                     <div class="detail-item"><label>GMB Link</label><span>${lead.gmb_link ? `<a href="${esc(lead.gmb_link)}" target="_blank">View on Google Maps</a>` : '—'}</span></div>
                     <div class="detail-item"><label>Address</label><span>${esc(lead.address || '—')}</span></div>
                     <div class="detail-item"><label>Area</label><span>${esc(lead.area || '—')}</span></div>
                     <div class="detail-item"><label>Rating</label><span>${lead.rating ? `${lead.rating} / 5 (${lead.review_count || 0} reviews)` : '—'}</span></div>
                     <div class="detail-item"><label>Lead Type</label><span>${typeBadge(lead.lead_type)}</span></div>
-                    <div class="detail-item"><label>Owner</label><span>${esc(lead.owner_name || '—')}</span></div>
-                    <div class="detail-item"><label>LinkedIn</label><span>${lead.owner_linkedin ? `<a href="${esc(lead.owner_linkedin)}" target="_blank">View Profile</a>` : '—'}</span></div>
                 </div>
+
+                <!-- Owner / Contact Section -->
+                <div style="margin-top:20px;padding:16px;background:var(--bg-primary);border-radius:var(--radius)">
+                    <h4 style="font-size:14px;margin-bottom:12px">Owner & Contact Details</h4>
+                    <div class="detail-grid">
+                        <div class="detail-item"><label>Owner Name</label><span>${esc(lead.owner_name || 'Not found')}</span></div>
+                        <div class="detail-item"><label>LinkedIn</label><span>${lead.owner_linkedin ? `<a href="${esc(lead.owner_linkedin)}" target="_blank">View Profile</a>` : 'Not found'}</span></div>
+                    </div>
+                    ${Object.keys(ownerSocials).length > 0 ? `
+                        <div style="margin-top:8px">
+                            <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">Social Profiles</label>
+                            <div style="display:flex;gap:8px;flex-wrap:wrap">
+                                ${Object.entries(ownerSocials).map(([platform, url]) => `
+                                    <a href="${esc(url)}" target="_blank" class="btn btn-secondary btn-sm" style="font-size:11px">${esc(platform.replace('.com',''))}</a>
+                                `).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+                    ${contactEmails.length > 1 ? `
+                        <div style="margin-top:8px">
+                            <label style="font-size:12px;color:var(--text-muted);display:block;margin-bottom:4px">All Emails Found</label>
+                            <div style="font-size:13px">${contactEmails.map(e => `<a href="mailto:${esc(e)}" style="margin-right:12px">${esc(e)}</a>`).join('')}</div>
+                        </div>
+                    ` : ''}
+                </div>
+
                 <div style="margin-top:16px">
                     <h4 style="font-size:14px;margin-bottom:8px">Scores</h4>
                     <div style="display:flex;gap:24px;">
@@ -382,7 +412,7 @@ async function openLead(id) {
             <div id="tab-audit-${id}" class="tab-content" style="display:none">
                 ${lead.has_website ? `
                     <h4 style="margin-bottom:4px">SEO Analysis — Score: ${lead.seo_score}/100 ${lead.is_seo_optimized ? '<span style="color:var(--green)">(Optimized)</span>' : '<span style="color:var(--red)">(Needs Work)</span>'}</h4>
-                    ${lead.has_old_website ? '<p style="color:var(--yellow);font-size:13px;margin-bottom:12px">⚠ Website appears outdated</p>' : ''}
+                    ${lead.has_old_website ? '<p style="color:var(--yellow);font-size:13px;margin-bottom:12px">Warning: Website appears outdated</p>' : ''}
                     ${audit.seo ? `
                         <div class="audit-section">
                             <h4>Issues Found</h4>
@@ -412,9 +442,78 @@ async function openLead(id) {
                 <div style="margin-top:20px;padding:16px;background:var(--bg-primary);border-radius:var(--radius)">
                     <h4 style="margin-bottom:8px">Pitch Recommendation</h4>
                     <p style="font-size:13px;color:var(--text-secondary)">
-                        ${getPitchRecommendation(lead)}
+                        ${getPitchRecommendation(lead, audit)}
                     </p>
                 </div>
+            </div>
+
+            <!-- Website Analysis Tab -->
+            <div id="tab-website-${id}" class="tab-content" style="display:none">
+                ${lead.has_website ? `
+                    <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap">
+                        <div style="padding:8px 16px;border-radius:var(--radius);font-size:13px;font-weight:600;${wq.design_age === 'outdated' ? 'background:var(--red-bg,rgba(239,68,68,0.1));color:var(--red)' : wq.design_age === 'needs_improvement' ? 'background:var(--yellow-bg,rgba(245,158,11,0.1));color:var(--yellow)' : 'background:var(--green-bg,rgba(34,197,94,0.1));color:var(--green)'}">
+                            Design: ${wq.design_age === 'outdated' ? 'Outdated' : wq.design_age === 'needs_improvement' ? 'Needs Improvement' : 'Modern'}
+                        </div>
+                        <div style="padding:8px 16px;border-radius:var(--radius);font-size:13px;font-weight:600;${wq.has_contact_form ? 'background:var(--green-bg,rgba(34,197,94,0.1));color:var(--green)' : 'background:var(--red-bg,rgba(239,68,68,0.1));color:var(--red)'}">
+                            Contact Form: ${wq.has_contact_form ? 'Found' : 'Missing'}
+                        </div>
+                    </div>
+
+                    ${(wq.tech_stack || []).length > 0 ? `
+                        <div class="audit-section">
+                            <h4>Tech Stack Detected</h4>
+                            <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px">
+                                ${wq.tech_stack.map(t => `<span style="padding:4px 10px;background:var(--bg-primary);border-radius:12px;font-size:12px;color:var(--text-secondary)">${esc(t)}</span>`).join('')}
+                            </div>
+                        </div>
+                    ` : ''}
+
+                    ${(wq.outdated_indicators || []).length > 0 ? `
+                        <div class="audit-section">
+                            <h4>Outdated Design Indicators</h4>
+                            <ul class="audit-list issues">${wq.outdated_indicators.map(i => `<li>${esc(i)}</li>`).join('')}</ul>
+                        </div>
+                    ` : ''}
+
+                    ${(wq.ui_ux_issues || []).length > 0 ? `
+                        <div class="audit-section">
+                            <h4>UI/UX Issues</h4>
+                            <ul class="audit-list issues">${wq.ui_ux_issues.map(i => `<li>${esc(i)}</li>`).join('')}</ul>
+                        </div>
+                    ` : ''}
+
+                    ${(wq.mobile_issues || []).length > 0 ? `
+                        <div class="audit-section">
+                            <h4>Mobile Responsiveness Issues</h4>
+                            <ul class="audit-list issues">${wq.mobile_issues.map(i => `<li>${esc(i)}</li>`).join('')}</ul>
+                        </div>
+                    ` : ''}
+
+                    ${(wq.contact_form_issues || []).length > 0 ? `
+                        <div class="audit-section">
+                            <h4>Contact Form Issues</h4>
+                            <ul class="audit-list issues">${wq.contact_form_issues.map(i => `<li>${esc(i)}</li>`).join('')}</ul>
+                        </div>
+                    ` : ''}
+
+                    ${(wq.performance_issues || []).length > 0 ? `
+                        <div class="audit-section">
+                            <h4>Performance Issues</h4>
+                            <ul class="audit-list issues">${wq.performance_issues.map(i => `<li>${esc(i)}</li>`).join('')}</ul>
+                        </div>
+                    ` : ''}
+
+                    ${!(wq.outdated_indicators || []).length && !(wq.ui_ux_issues || []).length && !(wq.mobile_issues || []).length && !(wq.performance_issues || []).length ? `
+                        <div style="padding:16px;background:var(--green-bg,rgba(34,197,94,0.1));border-radius:var(--radius);color:var(--green);font-size:13px">
+                            Website looks good! No major quality issues detected.
+                        </div>
+                    ` : ''}
+                ` : `
+                    <div style="padding:24px;text-align:center;color:var(--text-muted)">
+                        <p style="font-size:15px;margin-bottom:8px">No Website</p>
+                        <p style="font-size:13px">This business doesn't have a website — a great opportunity to pitch website development services.</p>
+                    </div>
+                `}
             </div>
 
             <!-- Activity Tab -->
@@ -667,23 +766,50 @@ function formatDate(iso) {
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
 }
 
-function getPitchRecommendation(lead) {
+function getPitchRecommendation(lead, audit) {
     const recs = [];
+    const wq = (audit && audit.website_quality) || {};
+
     if (!lead.has_website) {
         recs.push('<strong>Website Development:</strong> This business has no website. Pitch a professional website to establish their online presence.');
     }
-    if (lead.has_old_website) {
-        recs.push('<strong>Website Redesign:</strong> Their website appears outdated. Pitch a modern, mobile-responsive redesign.');
+
+    if (lead.has_old_website || wq.design_age === 'outdated') {
+        const indicators = (wq.outdated_indicators || []).slice(0, 2);
+        const details = indicators.length ? ' Issues: ' + indicators.join(', ') + '.' : '';
+        recs.push(`<strong>Website Redesign:</strong> Their website uses outdated design/technology.${details} Pitch a modern, mobile-responsive redesign.`);
     }
+
+    if ((wq.mobile_issues || []).length > 0) {
+        recs.push(`<strong>Mobile Optimization:</strong> ${wq.mobile_issues.length} mobile issue(s) found. Pitch responsive design services to capture mobile traffic.`);
+    }
+
+    if (!wq.has_contact_form && lead.has_website) {
+        recs.push('<strong>Contact Form:</strong> No working contact form detected. Pitch a professional contact form with lead capture.');
+    } else if ((wq.contact_form_issues || []).length > 0) {
+        recs.push(`<strong>Contact Form Fix:</strong> ${wq.contact_form_issues.length} issue(s) with their contact form. Pitch form repair/improvement.`);
+    }
+
+    if ((wq.ui_ux_issues || []).length > 0) {
+        recs.push(`<strong>UI/UX Improvement:</strong> ${wq.ui_ux_issues.length} UI/UX issue(s) found. Pitch a design audit and improvements.`);
+    }
+
+    if ((wq.performance_issues || []).length > 0) {
+        recs.push(`<strong>Performance Optimization:</strong> ${wq.performance_issues.length} performance issue(s) detected. Pitch speed optimization services.`);
+    }
+
     if (lead.has_website && !lead.is_seo_optimized) {
         recs.push('<strong>Local SEO:</strong> Their website is not SEO optimized. Pitch local SEO services to improve search visibility.');
     }
+
     if (!lead.is_gmb_optimized) {
         recs.push('<strong>GMB Optimization:</strong> Their Google My Business profile needs work. Pitch GMB optimization services.');
     }
+
     if (lead.has_website) {
         recs.push('<strong>AI Chatbot:</strong> Add an AI chatbot to their website to improve customer engagement and capture leads 24/7.');
     }
+
     if (recs.length === 0) {
         recs.push('This business appears well-optimized. Consider pitching advanced services like PPC management, social media marketing, or advanced analytics.');
     }

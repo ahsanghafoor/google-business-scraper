@@ -48,7 +48,7 @@ class ScrapeRequest(BaseModel):
     area: str
     module: str = "all_businesses"  # no_website | all_businesses
     max_results: int = 100
-    find_owners: bool = False
+    find_owners: bool = True  # Always on by default
 
 class GmbLinkRequest(BaseModel):
     gmb_link: str
@@ -137,7 +137,7 @@ async def start_scrape(req: ScrapeRequest, db: Session = Depends(get_db)):
 
                 # Analyze website if present
                 seo_data = {}
-                if biz.get("website") and req.module == "all_businesses":
+                if biz.get("website"):
                     try:
                         seo_data = await WebsiteAnalyzer.analyze(biz["website"])
                     except Exception as e:
@@ -147,9 +147,9 @@ async def start_scrape(req: ScrapeRequest, db: Session = Depends(get_db)):
                 # Analyze GMB
                 gmb_data = WebsiteAnalyzer.analyze_gmb(biz)
 
-                # Find owner if requested
+                # Always find owner details
                 owner_data = {}
-                if req.find_owners and (biz.get("website") or biz.get("business_name")):
+                if biz.get("website") or biz.get("business_name"):
                     try:
                         page = await scraper.context.new_page()
                         owner_data = await OwnerFinder.find_owner(
@@ -174,7 +174,8 @@ async def start_scrape(req: ScrapeRequest, db: Session = Depends(get_db)):
                 else:
                     lead_type = "hot"  # Many issues, easy pitch
 
-                # Build audit report
+                # Build comprehensive audit report
+                website_quality = seo_data.get("website_quality", {})
                 audit = {
                     "seo": {
                         "score": seo_score,
@@ -186,6 +187,17 @@ async def start_scrape(req: ScrapeRequest, db: Session = Depends(get_db)):
                         "issues": gmb_data.get("gmb_issues", []),
                         "recommendations": gmb_data.get("gmb_recommendations", []),
                     },
+                    "website_quality": {
+                        "design_age": website_quality.get("design_age", "unknown"),
+                        "has_contact_form": website_quality.get("has_contact_form", False),
+                        "contact_form_issues": website_quality.get("contact_form_issues", []),
+                        "ui_ux_issues": website_quality.get("ui_ux_issues", []),
+                        "mobile_issues": website_quality.get("mobile_issues", []),
+                        "performance_issues": website_quality.get("performance_issues", []),
+                        "tech_stack": website_quality.get("tech_stack", []),
+                        "outdated_indicators": website_quality.get("outdated_indicators", []),
+                    },
+                    "contact_emails": seo_data.get("emails", []),
                 }
 
                 # Parse area into components
@@ -194,10 +206,18 @@ async def start_scrape(req: ScrapeRequest, db: Session = Depends(get_db)):
                 state = area_parts[1].strip() if len(area_parts) >= 2 else ""
                 country = area_parts[2].strip() if len(area_parts) >= 3 else ""
 
+                # Best contact email: prioritize website-extracted emails
+                contact_email = seo_data.get("email", "")
+
+                # Best phone: from GMB first, then website
+                contact_phone = biz.get("phone", "")
+                if not contact_phone and seo_data.get("phones_from_website"):
+                    contact_phone = seo_data["phones_from_website"][0]
+
                 lead = Lead(
                     business_name=biz.get("business_name", ""),
-                    phone=biz.get("phone", "") or owner_data.get("phone", ""),
-                    email=seo_data.get("email", ""),
+                    phone=contact_phone,
+                    email=contact_email,
                     website=biz.get("website", ""),
                     has_website=biz.get("has_website", False),
                     address=biz.get("address", ""),
@@ -327,12 +347,27 @@ async def scrape_gmb_link(req: GmbLinkRequest, db: Session = Depends(get_db)):
 
         gmb_data = WebsiteAnalyzer.analyze_gmb(biz)
 
+        # Find owner details
+        owner_data = {}
+        if biz.get("website") or biz.get("business_name"):
+            try:
+                page = await scraper.context.new_page()
+                owner_data = await OwnerFinder.find_owner(
+                    biz.get("business_name", ""),
+                    biz.get("website", ""),
+                    page,
+                )
+                await page.close()
+            except Exception as e:
+                logger.warning(f"Owner find error: {e}")
+
         seo_score = seo_data.get("seo_score", 0)
         gmb_score = gmb_data.get("gmb_score", 0)
         overall = (seo_score * 0.5 + gmb_score * 0.5) if biz.get("website") else gmb_score
 
         lead_type = "hot" if overall < 40 else ("warm" if overall < 70 else "cold")
 
+        website_quality = seo_data.get("website_quality", {})
         audit = {
             "seo": {
                 "score": seo_score,
@@ -344,12 +379,28 @@ async def scrape_gmb_link(req: GmbLinkRequest, db: Session = Depends(get_db)):
                 "issues": gmb_data.get("gmb_issues", []),
                 "recommendations": gmb_data.get("gmb_recommendations", []),
             },
+            "website_quality": {
+                "design_age": website_quality.get("design_age", "unknown"),
+                "has_contact_form": website_quality.get("has_contact_form", False),
+                "contact_form_issues": website_quality.get("contact_form_issues", []),
+                "ui_ux_issues": website_quality.get("ui_ux_issues", []),
+                "mobile_issues": website_quality.get("mobile_issues", []),
+                "performance_issues": website_quality.get("performance_issues", []),
+                "tech_stack": website_quality.get("tech_stack", []),
+                "outdated_indicators": website_quality.get("outdated_indicators", []),
+            },
+            "contact_emails": seo_data.get("emails", []),
         }
+
+        contact_email = seo_data.get("email", "")
+        contact_phone = biz.get("phone", "")
+        if not contact_phone and seo_data.get("phones_from_website"):
+            contact_phone = seo_data["phones_from_website"][0]
 
         lead = Lead(
             business_name=biz.get("business_name", ""),
-            phone=biz.get("phone", ""),
-            email=seo_data.get("email", ""),
+            phone=contact_phone,
+            email=contact_email,
             website=biz.get("website", ""),
             has_website=biz.get("has_website", False),
             address=biz.get("address", ""),
@@ -357,6 +408,9 @@ async def scrape_gmb_link(req: GmbLinkRequest, db: Session = Depends(get_db)):
             category=biz.get("category", ""),
             rating=biz.get("rating"),
             review_count=biz.get("review_count"),
+            owner_name=owner_data.get("owner_name", ""),
+            owner_linkedin=owner_data.get("owner_linkedin", ""),
+            owner_social=owner_data.get("owner_social", ""),
             seo_score=seo_score,
             gmb_score=gmb_score,
             overall_score=overall,
