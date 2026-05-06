@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LeadScraper Pro — Google Business Scraper & Lead Manager</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+<div class="app">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h1>LeadScraper Pro</h1>
+            <p>Google Business Scraper</p>
+        </div>
+        <nav class="sidebar-nav">
+            <div class="nav-item active" data-page="dashboard">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+                <span>Dashboard</span>
+            </div>
+            <div class="nav-item" data-page="scraper">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                <span>Scraper</span>
+            </div>
+            <div class="nav-item" data-page="leads">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+                <span>Leads</span>
+            </div>
+            <div class="nav-item" data-page="history">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+                <span>History</span>
+            </div>
+        </nav>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+
+        <!-- Dashboard Page -->
+        <div id="page-dashboard" class="page active">
+            <div class="page-header">
+                <h2>Dashboard</h2>
+                <button class="btn btn-primary" onclick="showPage('scraper')">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                    New Scrape
+                </button>
+            </div>
+
+            <div class="stats-grid" id="stats-grid">
+                <div class="stat-card blue"><div class="stat-label">Total Leads</div><div class="stat-value" id="stat-total">0</div></div>
+                <div class="stat-card red"><div class="stat-label">Hot Leads</div><div class="stat-value" id="stat-hot">0</div><div class="stat-sub">Easy to pitch</div></div>
+                <div class="stat-card yellow"><div class="stat-label">Warm Leads</div><div class="stat-value" id="stat-warm">0</div><div class="stat-sub">Good opportunity</div></div>
+                <div class="stat-card green"><div class="stat-label">Without Website</div><div class="stat-value" id="stat-no-website">0</div><div class="stat-sub">Website service pitch</div></div>
+                <div class="stat-card cyan"><div class="stat-label">Contacted</div><div class="stat-value" id="stat-contacted">0</div></div>
+                <div class="stat-card purple"><div class="stat-label">Converted</div><div class="stat-value" id="stat-converted">0</div></div>
+            </div>
+
+            <div class="card">
+                <div class="card-header">
+                    <h3>Recent Leads</h3>
+                    <button class="btn btn-secondary btn-sm" onclick="showPage('leads')">View All</button>
+                </div>
+                <div class="table-wrapper">
+                    <table>
+                        <thead><tr>
+                            <th>Business</th><th>Category</th><th>Area</th><th>Score</th><th>Type</th><th>Status</th>
+                        </tr></thead>
+                        <tbody id="recent-leads-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- Scraper Page -->
+        <div id="page-scraper" class="page">
+            <div class="page-header"><h2>Scraper</h2></div>
+
+            <div class="card">
+                <div class="card-header"><h3>Search Google Maps</h3></div>
+                <form id="scrape-form" onsubmit="startScrape(event)">
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Business Niche / Type</label>
+                            <input type="text" class="form-control" id="scrape-niche"
+                                   placeholder="e.g. Electrician, Plumber, Doctor" required>
+                        </div>
+                        <div class="form-group">
+                            <label>Area / Location</label>
+                            <input type="text" class="form-control" id="scrape-area"
+                                   placeholder="e.g. Sugar Land, TX, US" required>
+                        </div>
+                    </div>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>Scraping Module</label>
+                            <select class="form-control" id="scrape-module">
+                                <option value="all_businesses">All Businesses (Full Analysis)</option>
+                                <option value="no_website">Businesses Without Website Only</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label>Max Results</label>
+                            <input type="number" class="form-control" id="scrape-max"
+                                   value="50" min="5" max="200">
+                        </div>
+                    </div>
+                    <div class="form-group" style="padding:8px 12px;background:var(--bg-primary);border-radius:var(--radius);font-size:13px;color:var(--text-secondary)">
+                        <strong style="color:var(--text-primary)">Auto-included:</strong> Owner discovery (CEO/founder search), contact email extraction, and website quality analysis run automatically for every lead.
+                    </div>
+                    <button type="submit" class="btn btn-primary" id="scrape-btn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                        Start Scraping
+                    </button>
+                </form>
+            </div>
+
+            <div class="card">
+                <div class="card-header"><h3>Add Lead from GMB Link</h3></div>
+                <form id="gmb-form" onsubmit="scrapeGmbLink(event)">
+                    <div class="form-group">
+                        <label>Google Maps Business Link</label>
+                        <input type="url" class="form-control" id="gmb-link"
+                               placeholder="https://www.google.com/maps/place/..." required>
+                    </div>
+                    <button type="submit" class="btn btn-primary" id="gmb-btn">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                        Fetch & Add Lead
+                    </button>
+                </form>
+            </div>
+        </div>
+
+        <!-- Leads Page -->
+        <div id="page-leads" class="page">
+            <div class="page-header">
+                <h2>Lead Management</h2>
+                <div style="display:flex;gap:8px;">
+                    <button class="btn btn-secondary btn-sm" onclick="exportLeads()">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                        Export CSV
+                    </button>
+                </div>
+            </div>
+
+            <div class="filters-bar">
+                <input type="text" class="form-control search-input" id="lead-search"
+                       placeholder="Search businesses..." oninput="debounceLoadLeads()">
+                <select class="form-control" id="filter-niche" onchange="loadLeads()">
+                    <option value="">All Niches</option>
+                </select>
+                <select class="form-control" id="filter-area" onchange="loadLeads()">
+                    <option value="">All Areas</option>
+                </select>
+                <select class="form-control" id="filter-type" onchange="loadLeads()">
+                    <option value="">All Types</option>
+                    <option value="hot">Hot</option>
+                    <option value="warm">Warm</option>
+                    <option value="cold">Cold</option>
+                </select>
+                <select class="form-control" id="filter-status" onchange="loadLeads()">
+                    <option value="">All Statuses</option>
+                    <option value="not_contacted">Not Contacted</option>
+                    <option value="emailed">Emailed</option>
+                    <option value="called">Called</option>
+                    <option value="messaged">Messaged</option>
+                    <option value="follow_up">Follow Up</option>
+                    <option value="converted">Converted</option>
+                    <option value="lost">Lost</option>
+                </select>
+                <select class="form-control" id="filter-website" onchange="loadLeads()">
+                    <option value="">All</option>
+                    <option value="true">Has Website</option>
+                    <option value="false">No Website</option>
+                </select>
+            </div>
+
+            <div class="table-wrapper">
+                <table>
+                    <thead><tr>
+                        <th onclick="sortLeads('business_name')">Business</th>
+                        <th onclick="sortLeads('category')">Category</th>
+                        <th>Phone</th>
+                        <th>Email</th>
+                        <th>Website</th>
+                        <th onclick="sortLeads('overall_score')">Score</th>
+                        <th onclick="sortLeads('lead_type')">Type</th>
+                        <th onclick="sortLeads('approach_status')">Status</th>
+                        <th>Actions</th>
+                    </tr></thead>
+                    <tbody id="leads-body"></tbody>
+                </table>
+            </div>
+
+            <div class="pagination" id="leads-pagination"></div>
+        </div>
+
+        <!-- History Page -->
+        <div id="page-history" class="page">
+            <div class="page-header"><h2>Scrape History</h2></div>
+            <div class="table-wrapper">
+                <table>
+                    <thead><tr>
+                        <th>Niche</th><th>Area</th><th>Module</th><th>Status</th>
+                        <th>Found</th><th>Scraped</th><th>Skipped</th><th>Date</th>
+                    </tr></thead>
+                    <tbody id="history-body"></tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+</div>
+
+<!-- Progress Overlay -->
+<div class="progress-overlay" id="progress-overlay">
+    <div class="progress-box">
+        <div class="progress-spinner"></div>
+        <h3 id="progress-title">Scraping in Progress...</h3>
+        <p class="progress-text" id="progress-text">Starting scraper...</p>
+        <div class="progress-bar-track">
+            <div class="progress-bar-fill" id="progress-bar"></div>
+        </div>
+        <p class="progress-text" id="progress-detail" style="margin-top:8px;"></p>
+    </div>
+</div>
+
+<!-- Lead Detail Modal -->
+<div class="modal-overlay" id="lead-modal">
+    <div class="modal">
+        <div class="modal-header">
+            <h3 id="modal-title">Lead Details</h3>
+            <button class="modal-close" onclick="closeModal()">&times;</button>
+        </div>
+        <div class="modal-body" id="modal-body"></div>
+    </div>
+</div>
+
+<!-- Toast Container -->
+<div class="toast-container" id="toast-container"></div>
+
+<script src="/static/js/app.js"></script>
+</body>
+</html>
