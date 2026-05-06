@@ -4,12 +4,9 @@ import asyncio
 import json
 import logging
 import sys
+import threading
 from datetime import datetime, timezone
 from typing import Optional
-
-# Ensure Windows uses ProactorEventLoop (required for Playwright subprocess)
-if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
@@ -32,7 +29,7 @@ FRONTEND_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "fronten
 app.mount("/static", StaticFiles(directory=FRONTEND_DIR), name="static")
 
 # Global scraper state
-scraper_tasks: dict[str, asyncio.Task] = {}
+scraper_tasks: dict = {}
 scraper_progress: dict[str, dict] = {}
 
 
@@ -297,8 +294,27 @@ async def start_scrape(req: ScrapeRequest, db: Session = Depends(get_db)):
             await scraper.stop()
             db_local.close()
 
-    task = asyncio.create_task(run_scrape())
-    scraper_tasks[str(session_id)] = task
+    def _run_in_thread():
+        """Run scraper in a dedicated thread with its own event loop.
+
+        On Windows, SelectorEventLoop (uvicorn default) cannot create
+        subprocesses, which Playwright requires to launch Chromium.
+        Using a separate thread with ProactorEventLoop solves this
+        without disrupting uvicorn's HTTP serving.
+        """
+        if sys.platform == "win32":
+            loop = asyncio.ProactorEventLoop()
+        else:
+            loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            loop.run_until_complete(run_scrape())
+        finally:
+            loop.close()
+
+    thread = threading.Thread(target=_run_in_thread, daemon=True)
+    thread.start()
+    scraper_tasks[str(session_id)] = thread
 
     return {"session_id": session_id, "status": "started"}
 
