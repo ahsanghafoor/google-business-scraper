@@ -3,8 +3,13 @@
 import asyncio
 import json
 import logging
+import sys
 from datetime import datetime, timezone
 from typing import Optional
+
+# Ensure Windows uses ProactorEventLoop (required for Playwright subprocess)
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 from fastapi import FastAPI, Depends, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
