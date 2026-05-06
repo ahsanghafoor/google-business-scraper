@@ -13,6 +13,13 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# Words that indicate the scraper grabbed a UI element, not a real business
+BLACKLISTED_NAMES = {
+    "results", "result", "google maps", "map", "search", "sponsored",
+    "ads", "advertisement", "see more", "more places", "explore",
+    "update results", "undo", "show list",
+}
+
 
 class GoogleMapsScraper:
     """Scrapes Google Maps search results using a headless browser."""
@@ -20,15 +27,17 @@ class GoogleMapsScraper:
     def __init__(self):
         self.browser: Browser | None = None
         self.context = None
+        self._pw = None
 
     async def start(self):
-        pw = await async_playwright().start()
-        self.browser = await pw.chromium.launch(
+        self._pw = await async_playwright().start()
+        self.browser = await self._pw.chromium.launch(
             headless=True,
             args=[
                 "--no-sandbox",
                 "--disable-blink-features=AutomationControlled",
                 "--disable-dev-shm-usage",
+                "--disable-gpu",
             ],
         )
         self.context = await self.browser.new_context(
@@ -36,7 +45,7 @@ class GoogleMapsScraper:
             user_agent=(
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
+                "Chrome/124.0.0.0 Safari/537.36"
             ),
             locale="en-US",
         )
@@ -44,6 +53,36 @@ class GoogleMapsScraper:
     async def stop(self):
         if self.browser:
             await self.browser.close()
+        if self._pw:
+            await self._pw.stop()
+
+    @staticmethod
+    def _is_valid_business_name(name: str) -> bool:
+        """Check if extracted text is a real business name."""
+        if not name or len(name.strip()) < 2:
+            return False
+        if name.strip().lower() in BLACKLISTED_NAMES:
+            return False
+        if len(name) > 200:
+            return False
+        return True
+
+    async def _dismiss_consent(self, page: Page):
+        """Dismiss Google cookie / consent dialogs."""
+        for selector in [
+            'button:has-text("Accept all")',
+            'button:has-text("Reject all")',
+            'button:has-text("I agree")',
+            'form[action*="consent"] button',
+        ]:
+            try:
+                btn = page.locator(selector)
+                if await btn.count() > 0:
+                    await btn.first.click(timeout=3000)
+                    await asyncio.sleep(1)
+                    return
+            except Exception:
+                continue
 
     async def scrape_businesses(
         self,
@@ -57,6 +96,10 @@ class GoogleMapsScraper:
         """
         Scrape Google Maps for businesses.
         module: 'no_website' or 'all_businesses'
+
+        Strategy:
+          1. Load search results and scroll to collect place URLs.
+          2. Open each place URL in a new page to extract details.
         """
         if existing_gmb_links is None:
             existing_gmb_links = set()
@@ -68,128 +111,182 @@ class GoogleMapsScraper:
         businesses = []
 
         try:
-            await page.goto(search_url, wait_until="networkidle", timeout=30000)
-            await asyncio.sleep(2)
-
-            # Try to dismiss consent dialog if present
-            try:
-                accept_btn = page.locator('button:has-text("Accept all")')
-                if await accept_btn.count() > 0:
-                    await accept_btn.first.click()
-                    await asyncio.sleep(1)
-            except Exception:
-                pass
-
-            # Scroll through results to load more
-            results_panel = page.locator('div[role="feed"]')
-            if await results_panel.count() == 0:
-                results_panel = page.locator('div[role="main"]')
-
-            prev_count = 0
-            scroll_attempts = 0
-            max_scroll_attempts = 30
-
-            while scroll_attempts < max_scroll_attempts:
-                # Get all listing links
-                listings = page.locator('a[href*="/maps/place/"]')
-                current_count = await listings.count()
-
-                if current_count >= max_results:
-                    break
-
-                if current_count == prev_count:
-                    scroll_attempts += 1
-                    if scroll_attempts >= 5:
-                        # Check for end of list
-                        end_marker = page.locator('span:has-text("You\'ve reached the end")')
-                        if await end_marker.count() > 0:
-                            break
-                else:
-                    scroll_attempts = 0
-
-                prev_count = current_count
-
-                # Scroll within the results panel
-                try:
-                    await results_panel.evaluate(
-                        "el => el.scrollBy(0, 800)"
-                    )
-                except Exception:
-                    await page.mouse.wheel(0, 800)
-
-                await asyncio.sleep(1)
-
-            # Now extract each listing
-            listings = page.locator('a[href*="/maps/place/"]')
-            count = min(await listings.count(), max_results)
-
+            # ── Step 1: Load search results ──────────────────────────
             if progress_callback:
                 await progress_callback({
-                    "stage": "found_listings",
-                    "total": count,
+                    "stage": "loading",
+                    "total": 0,
                     "scraped": 0,
                     "skipped": 0,
                 })
 
-            skipped = 0
-            for i in range(count):
-                try:
-                    listing = listings.nth(i)
-                    href = await listing.get_attribute("href")
+            await page.goto(search_url, wait_until="domcontentloaded", timeout=60000)
+            await asyncio.sleep(3)
 
-                    if not href:
+            await self._dismiss_consent(page)
+
+            # Wait for the results feed to appear
+            feed = page.locator('div[role="feed"]')
+            try:
+                await feed.wait_for(state="attached", timeout=15000)
+            except PWTimeout:
+                logger.warning("Results feed not found, trying alternative container")
+                feed = page.locator('div[role="main"]')
+                try:
+                    await feed.wait_for(state="attached", timeout=10000)
+                except PWTimeout:
+                    logger.error("Could not find results container at all")
+                    return businesses
+
+            # ── Step 2: Scroll to load listings ──────────────────────
+            collected_urls: list[str] = []
+            seen_urls: set[str] = set()
+            stale_rounds = 0
+            max_stale = 8
+
+            while stale_rounds < max_stale and len(collected_urls) < max_results:
+                # Collect all place links currently visible
+                links = page.locator('a[href*="/maps/place/"]')
+                link_count = await links.count()
+                new_found = 0
+                for idx in range(link_count):
+                    try:
+                        href = await links.nth(idx).get_attribute("href")
+                        if href and href not in seen_urls:
+                            seen_urls.add(href)
+                            collected_urls.append(href)
+                            new_found += 1
+                    except Exception:
                         continue
 
-                    # Duplicate detection
-                    if href in existing_gmb_links:
+                if new_found == 0:
+                    stale_rounds += 1
+                else:
+                    stale_rounds = 0
+
+                if len(collected_urls) >= max_results:
+                    break
+
+                # Check for end-of-list marker
+                end_marker = page.locator(
+                    'span.HlvSq, p.fontBodyMedium:has-text("end of list"), '
+                    'span:has-text("You\'ve reached the end")'
+                )
+                if await end_marker.count() > 0:
+                    logger.info("Reached end of results list")
+                    break
+
+                # Scroll down inside the feed
+                try:
+                    await feed.evaluate("el => el.scrollTop = el.scrollTop + 1000")
+                except Exception:
+                    try:
+                        await page.mouse.wheel(0, 1000)
+                    except Exception:
+                        pass
+                await asyncio.sleep(1.5)
+
+            await page.close()
+
+            # Trim to max_results
+            collected_urls = collected_urls[:max_results]
+
+            if progress_callback:
+                await progress_callback({
+                    "stage": "found_listings",
+                    "total": len(collected_urls),
+                    "scraped": 0,
+                    "skipped": 0,
+                })
+
+            logger.info(f"Collected {len(collected_urls)} place URLs for '{query}'")
+
+            # ── Step 3: Visit each place page and extract details ────
+            skipped = 0
+            for i, place_url in enumerate(collected_urls):
+                try:
+                    # Duplicate detection by URL
+                    if place_url in existing_gmb_links:
                         skipped += 1
                         if progress_callback:
                             await progress_callback({
                                 "stage": "scraping",
                                 "current": i + 1,
-                                "total": count,
+                                "total": len(collected_urls),
                                 "skipped": skipped,
                                 "scraped": len(businesses),
                             })
                         continue
 
-                    # Click on listing to open details
+                    detail_page = await self.context.new_page()
                     try:
-                        await listing.click(timeout=5000)
-                    except Exception:
-                        continue
-                    await asyncio.sleep(2)
+                        biz = await self._extract_from_place_page(
+                            detail_page, place_url
+                        )
+                    finally:
+                        await detail_page.close()
 
-                    biz = await self._extract_business_details(page, href)
                     if biz:
                         # Apply module filter
                         if module == "no_website" and biz.get("website"):
                             skipped += 1
                         else:
                             businesses.append(biz)
+                    else:
+                        skipped += 1
 
                     if progress_callback:
                         await progress_callback({
                             "stage": "scraping",
                             "current": i + 1,
-                            "total": count,
+                            "total": len(collected_urls),
                             "skipped": skipped,
                             "scraped": len(businesses),
                         })
 
                 except Exception as e:
-                    logger.warning(f"Error extracting listing {i}: {e}")
+                    logger.warning(f"Error processing listing {i}: {e}")
+                    skipped += 1
                     continue
 
         except Exception as e:
-            logger.error(f"Scraping error: {e}")
+            logger.error(f"Scraping error: {e}", exc_info=True)
         finally:
-            await page.close()
+            if not page.is_closed():
+                await page.close()
 
         return businesses
 
+    async def _extract_from_place_page(
+        self, page: Page, place_url: str
+    ) -> dict | None:
+        """Navigate to a Google Maps place URL and extract business details."""
+        try:
+            await page.goto(place_url, wait_until="domcontentloaded", timeout=30000)
+            await asyncio.sleep(2)
+
+            await self._dismiss_consent(page)
+
+            # Wait for the business name (h1) to appear
+            try:
+                await page.locator("h1").first.wait_for(state="visible", timeout=10000)
+            except PWTimeout:
+                logger.warning(f"h1 not visible for {place_url}")
+                return None
+
+            await asyncio.sleep(1)
+
+            return await self._extract_business_details(page, place_url)
+
+        except PWTimeout:
+            logger.warning(f"Timeout loading place page: {place_url}")
+            return None
+        except Exception as e:
+            logger.warning(f"Error loading place page: {e}")
+            return None
+
     async def _extract_business_details(self, page: Page, gmb_link: str) -> dict | None:
-        """Extract business details from the currently opened listing panel."""
+        """Extract business details from the currently loaded place page."""
         try:
             details = {
                 "gmb_link": gmb_link,
@@ -204,65 +301,142 @@ class GoogleMapsScraper:
                 "review_count": None,
             }
 
-            # Business name
+            # ── Business name ────────────────────────────────────────
+            name = ""
             try:
-                name_el = page.locator('h1').first
-                if await name_el.count() > 0:
-                    details["business_name"] = (await name_el.inner_text()).strip()
+                h1 = page.locator("h1")
+                h1_count = await h1.count()
+                for idx in range(h1_count):
+                    text = (await h1.nth(idx).inner_text()).strip()
+                    if self._is_valid_business_name(text):
+                        name = text
+                        break
             except Exception:
                 pass
 
-            if not details["business_name"]:
+            if not name:
+                # Fallback: try aria-label of the main section
+                try:
+                    main = page.locator('div[role="main"][aria-label]')
+                    if await main.count() > 0:
+                        label = await main.first.get_attribute("aria-label")
+                        if label and self._is_valid_business_name(label):
+                            name = label.strip()
+                except Exception:
+                    pass
+
+            if not name:
                 return None
 
-            # Category
+            details["business_name"] = name
+
+            # ── Category ─────────────────────────────────────────────
             try:
-                cat_el = page.locator('button[jsaction*="category"]').first
-                if await cat_el.count() > 0:
-                    details["category"] = (await cat_el.inner_text()).strip()
+                cat_btn = page.locator('button[jsaction*="category"]')
+                if await cat_btn.count() > 0:
+                    details["category"] = (await cat_btn.first.inner_text()).strip()
             except Exception:
                 pass
 
-            # Rating
+            if not details["category"]:
+                try:
+                    # Alternative: category text near the rating
+                    cat_span = page.locator('span.DkEaL')
+                    if await cat_span.count() > 0:
+                        details["category"] = (await cat_span.first.inner_text()).strip()
+                except Exception:
+                    pass
+
+            # ── Rating ───────────────────────────────────────────────
             try:
+                # Try the structured rating element first
                 rating_el = page.locator('div.F7nice span[aria-hidden="true"]').first
                 if await rating_el.count() > 0:
-                    rating_text = await rating_el.inner_text()
-                    details["rating"] = float(rating_text.strip())
-            except Exception:
+                    rating_text = (await rating_el.inner_text()).strip()
+                    details["rating"] = float(rating_text)
+            except (ValueError, Exception):
                 pass
 
-            # Review count
+            if details["rating"] is None:
+                try:
+                    # Fallback: aria-label on the stars
+                    stars = page.locator('span[role="img"][aria-label*="star"]')
+                    if await stars.count() > 0:
+                        label = await stars.first.get_attribute("aria-label")
+                        if label:
+                            m = re.search(r'([\d.]+)', label)
+                            if m:
+                                details["rating"] = float(m.group(1))
+                except Exception:
+                    pass
+
+            # ── Review count ─────────────────────────────────────────
             try:
-                review_el = page.locator('div.F7nice span[aria-label*="review"]').first
+                review_el = page.locator(
+                    'div.F7nice span[aria-label*="review"]'
+                ).first
                 if await review_el.count() > 0:
-                    review_text = await review_el.get_attribute("aria-label")
-                    if review_text:
-                        nums = re.findall(r'[\d,]+', review_text)
+                    aria = await review_el.get_attribute("aria-label")
+                    if aria:
+                        nums = re.findall(r'[\d,]+', aria)
                         if nums:
                             details["review_count"] = int(nums[0].replace(",", ""))
             except Exception:
                 pass
 
-            # Address, Phone, Website from info section
+            if details["review_count"] is None:
+                try:
+                    # Fallback: look for parenthesized review count text
+                    review_text = page.locator('span:has-text("review")')
+                    if await review_text.count() > 0:
+                        txt = await review_text.first.inner_text()
+                        m = re.search(r'([\d,]+)\s*review', txt, re.IGNORECASE)
+                        if m:
+                            details["review_count"] = int(
+                                m.group(1).replace(",", "")
+                            )
+                except Exception:
+                    pass
+
+            # ── Address, Phone, Website from action buttons ──────────
             try:
-                info_buttons = page.locator(
+                info_items = page.locator(
                     'button[data-item-id], a[data-item-id]'
                 )
-                info_count = await info_buttons.count()
-                for j in range(info_count):
+                count = await info_items.count()
+                for j in range(count):
                     try:
-                        btn = info_buttons.nth(j)
-                        data_id = await btn.get_attribute("data-item-id") or ""
-                        aria = await btn.get_attribute("aria-label") or ""
-                        text = (await btn.inner_text()).strip()
+                        el = info_items.nth(j)
+                        data_id = (await el.get_attribute("data-item-id") or "").lower()
+                        aria = await el.get_attribute("aria-label") or ""
 
-                        if "address" in data_id or "Address" in aria:
-                            details["address"] = aria.replace("Address: ", "").strip() or text
-                        elif "phone" in data_id or "Phone" in aria:
-                            details["phone"] = aria.replace("Phone: ", "").strip() or text
-                        elif "authority" in data_id or "website" in data_id.lower():
-                            website = aria.replace("Website: ", "").strip() or text
+                        if data_id.startswith("address") or "address" in aria.lower():
+                            details["address"] = (
+                                aria.replace("Address:", "")
+                                .replace("Address", "")
+                                .strip()
+                            )
+                            if not details["address"]:
+                                details["address"] = (await el.inner_text()).strip()
+
+                        elif data_id.startswith("phone") or "phone" in aria.lower():
+                            phone = (
+                                aria.replace("Phone:", "")
+                                .replace("Phone", "")
+                                .strip()
+                            )
+                            if not phone:
+                                phone = (await el.inner_text()).strip()
+                            details["phone"] = phone
+
+                        elif data_id == "authority" or "website" in data_id:
+                            website = (
+                                aria.replace("Website:", "")
+                                .replace("Website", "")
+                                .strip()
+                            )
+                            if not website:
+                                website = (await el.inner_text()).strip()
                             if website and not website.startswith("http"):
                                 website = "https://" + website
                             details["website"] = website
@@ -271,6 +445,17 @@ class GoogleMapsScraper:
                         continue
             except Exception:
                 pass
+
+            # If we still don't have an address, try the area from niche/area
+            if not details["address"]:
+                try:
+                    addr_div = page.locator(
+                        'div[data-attrid="kc:/location/location:address"]'
+                    )
+                    if await addr_div.count() > 0:
+                        details["address"] = (await addr_div.inner_text()).strip()
+                except Exception:
+                    pass
 
             return details
 
@@ -282,18 +467,22 @@ class GoogleMapsScraper:
         """Scrape a single GMB link for business details."""
         page = await self.context.new_page()
         try:
-            await page.goto(gmb_link, wait_until="networkidle", timeout=30000)
+            await page.goto(
+                gmb_link, wait_until="domcontentloaded", timeout=30000
+            )
             await asyncio.sleep(3)
 
-            # Dismiss consent if needed
-            try:
-                accept_btn = page.locator('button:has-text("Accept all")')
-                if await accept_btn.count() > 0:
-                    await accept_btn.first.click()
-                    await asyncio.sleep(1)
-            except Exception:
-                pass
+            await self._dismiss_consent(page)
 
+            # Wait for h1 to load
+            try:
+                await page.locator("h1").first.wait_for(
+                    state="visible", timeout=10000
+                )
+            except PWTimeout:
+                logger.warning("h1 not visible for GMB link")
+
+            await asyncio.sleep(1)
             return await self._extract_business_details(page, gmb_link)
         except Exception as e:
             logger.error(f"GMB link scrape error: {e}")
@@ -322,7 +511,7 @@ class WebsiteAnalyzer:
 
         try:
             async with httpx.AsyncClient(
-                timeout=15, follow_redirects=True,
+                timeout=20, follow_redirects=True,
                 verify=False,
                 headers={"User-Agent": "Mozilla/5.0 (compatible; LeadBot/1.0)"}
             ) as client:
@@ -339,7 +528,9 @@ class WebsiteAnalyzer:
                     seo_points += 10
                 else:
                     result["issues"].append("Missing or short title tag")
-                    result["recommendations"].append("Add a descriptive title tag (50-60 chars)")
+                    result["recommendations"].append(
+                        "Add a descriptive title tag (50-60 chars)"
+                    )
 
                 # 2. Meta description (10 pts)
                 meta_desc = soup.find("meta", attrs={"name": "description"})
@@ -352,7 +543,9 @@ class WebsiteAnalyzer:
                         result["issues"].append("Meta description is too short")
                 else:
                     result["issues"].append("Missing meta description")
-                    result["recommendations"].append("Add meta description (150-160 chars)")
+                    result["recommendations"].append(
+                        "Add meta description (150-160 chars)"
+                    )
 
                 # 3. H1 tag (10 pts)
                 h1 = soup.find("h1")
@@ -373,11 +566,15 @@ class WebsiteAnalyzer:
                 images = soup.find_all("img")
                 if images:
                     imgs_with_alt = sum(1 for img in images if img.get("alt"))
-                    alt_ratio = imgs_with_alt / len(images) if images else 0
+                    alt_ratio = imgs_with_alt / len(images)
                     seo_points += int(alt_ratio * 10)
                     if alt_ratio < 0.5:
-                        result["issues"].append(f"Only {int(alt_ratio*100)}% images have alt tags")
-                        result["recommendations"].append("Add alt text to all images")
+                        result["issues"].append(
+                            f"Only {int(alt_ratio*100)}% images have alt tags"
+                        )
+                        result["recommendations"].append(
+                            "Add alt text to all images"
+                        )
                 else:
                     seo_points += 5
 
@@ -387,7 +584,9 @@ class WebsiteAnalyzer:
                     seo_points += 10
                 else:
                     result["issues"].append("Missing viewport meta tag")
-                    result["recommendations"].append("Add viewport meta tag for mobile")
+                    result["recommendations"].append(
+                        "Add viewport meta tag for mobile"
+                    )
                     result["has_old_website"] = True
 
                 # 7. HTTPS (5 pts)
@@ -402,11 +601,14 @@ class WebsiteAnalyzer:
                 if schemas:
                     seo_points += 10
                 else:
-                    result["issues"].append("No structured data / schema markup")
-                    result["recommendations"].append("Add LocalBusiness schema markup")
+                    result["issues"].append(
+                        "No structured data / schema markup"
+                    )
+                    result["recommendations"].append(
+                        "Add LocalBusiness schema markup"
+                    )
 
                 # 9. Page speed indicators (10 pts)
-                # Check for large inline styles, excessive scripts
                 scripts = soup.find_all("script")
                 stylesheets = soup.find_all("link", rel="stylesheet")
                 if len(scripts) < 15 and len(stylesheets) < 10:
@@ -415,21 +617,30 @@ class WebsiteAnalyzer:
                     seo_points += 5
                     result["issues"].append("Too many scripts loaded")
                 else:
-                    result["issues"].append("Excessive scripts may slow page load")
-                    result["recommendations"].append("Optimize and reduce JS bundles")
+                    result["issues"].append(
+                        "Excessive scripts may slow page load"
+                    )
+                    result["recommendations"].append(
+                        "Optimize and reduce JS bundles"
+                    )
 
                 # 10. Internal links (5 pts)
                 links = soup.find_all("a", href=True)
                 domain = urlparse(website_url).netloc
-                internal = [l for l in links if domain in (urlparse(l["href"]).netloc or domain)]
+                internal = [
+                    l for l in links
+                    if domain in (urlparse(l["href"]).netloc or domain)
+                ]
                 if len(internal) >= 3:
                     seo_points += 5
                 else:
                     result["issues"].append("Very few internal links")
 
                 # 11. Social links (5 pts)
-                social_domains = ["facebook.com", "twitter.com", "instagram.com",
-                                  "linkedin.com", "youtube.com", "tiktok.com", "x.com"]
+                social_domains = [
+                    "facebook.com", "twitter.com", "instagram.com",
+                    "linkedin.com", "youtube.com", "tiktok.com", "x.com",
+                ]
                 social_found = []
                 for link in links:
                     href = link.get("href", "")
@@ -440,25 +651,42 @@ class WebsiteAnalyzer:
                     seo_points += 5
                 else:
                     result["issues"].append("No social media links found")
-                    result["recommendations"].append("Add links to social media profiles")
+                    result["recommendations"].append(
+                        "Add links to social media profiles"
+                    )
 
                 # 12. Contact info (5 pts)
                 page_text = soup.get_text()
-                has_phone = bool(re.search(r'[\(\+]?\d[\d\-\(\) ]{7,}\d', page_text))
-                has_email_on_page = bool(re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', page_text))
+                has_phone = bool(
+                    re.search(r'[\(\+]?\d[\d\-\(\) ]{7,}\d', page_text)
+                )
+                has_email_on_page = bool(
+                    re.search(
+                        r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
+                        page_text,
+                    )
+                )
                 if has_phone or has_email_on_page:
                     seo_points += 5
                 else:
-                    result["issues"].append("No visible contact info on website")
+                    result["issues"].append(
+                        "No visible contact info on website"
+                    )
 
                 # 13. Detect old/outdated website indicators (5 pts)
-                # Flash, table layouts, inline styles heavily used
-                flash_embeds = soup.find_all("embed", type=lambda x: x and "flash" in x.lower())
+                flash_embeds = soup.find_all(
+                    "embed",
+                    type=lambda x: x and "flash" in x.lower(),
+                )
                 table_layout = len(soup.find_all("table")) > 5
                 if flash_embeds or table_layout:
                     result["has_old_website"] = True
-                    result["issues"].append("Website appears to use outdated technologies")
-                    result["recommendations"].append("Modernize website with current standards")
+                    result["issues"].append(
+                        "Website appears to use outdated technologies"
+                    )
+                    result["recommendations"].append(
+                        "Modernize website with current standards"
+                    )
                 else:
                     seo_points += 5
 
@@ -468,7 +696,9 @@ class WebsiteAnalyzer:
                     year = int(copyright_match.group(1))
                     if year < 2022:
                         result["has_old_website"] = True
-                        result["issues"].append(f"Copyright year is {year}, website may be outdated")
+                        result["issues"].append(
+                            f"Copyright year is {year}, website may be outdated"
+                        )
 
                 result["seo_score"] = min(seo_points, max_points)
                 result["is_seo_optimized"] = seo_points >= 70
@@ -476,9 +706,12 @@ class WebsiteAnalyzer:
                 # Extract email from website
                 emails = re.findall(
                     r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}',
-                    page_text
+                    page_text,
                 )
-                filtered = [e for e in emails if not e.endswith(('.png', '.jpg', '.gif', '.svg'))]
+                filtered = [
+                    e for e in emails
+                    if not e.endswith(('.png', '.jpg', '.gif', '.svg'))
+                ]
                 if filtered:
                     result["email"] = filtered[0]
 
@@ -495,40 +728,34 @@ class WebsiteAnalyzer:
         issues = []
         recommendations = []
 
-        # Business name (10 pts)
         if biz.get("business_name"):
             score += 10
         else:
             issues.append("Missing business name")
 
-        # Phone (15 pts)
         if biz.get("phone"):
             score += 15
         else:
             issues.append("No phone number on GMB")
             recommendations.append("Add phone number to GMB profile")
 
-        # Website (15 pts)
         if biz.get("website"):
             score += 15
         else:
             issues.append("No website linked on GMB")
             recommendations.append("Add website to GMB profile")
 
-        # Address (10 pts)
         if biz.get("address"):
             score += 10
         else:
             issues.append("No address on GMB")
 
-        # Category (10 pts)
         if biz.get("category"):
             score += 10
         else:
             issues.append("No business category set")
             recommendations.append("Set appropriate business category")
 
-        # Rating (20 pts)
         rating = biz.get("rating")
         if rating is not None:
             if rating >= 4.5:
@@ -544,7 +771,6 @@ class WebsiteAnalyzer:
             issues.append("No ratings yet")
             recommendations.append("Encourage customers to leave reviews")
 
-        # Review count (20 pts)
         reviews = biz.get("review_count", 0) or 0
         if reviews >= 50:
             score += 20
@@ -570,7 +796,9 @@ class OwnerFinder:
     """Attempts to find business owner information via search."""
 
     @staticmethod
-    async def find_owner(business_name: str, website: str, page: Page) -> dict:
+    async def find_owner(
+        business_name: str, website: str, page: Page
+    ) -> dict:
         """Search for owner/CEO info using Google search tricks."""
         owner_info = {
             "owner_name": "",
@@ -584,34 +812,49 @@ class OwnerFinder:
         search_queries = []
         domain = ""
         if website:
-            domain = urlparse(website).netloc or website.replace("https://", "").replace("http://", "").split("/")[0]
+            domain = (
+                urlparse(website).netloc
+                or website.replace("https://", "")
+                .replace("http://", "")
+                .split("/")[0]
+            )
 
         if domain:
-            search_queries.append(f'"CEO" OR "owner" OR "founder" site:{domain}')
-            search_queries.append(f'{domain} CEO OR owner OR founder linkedin.com')
+            search_queries.append(
+                f'"CEO" OR "owner" OR "founder" site:{domain}'
+            )
+            search_queries.append(
+                f'{domain} CEO OR owner OR founder linkedin.com'
+            )
         if business_name:
-            search_queries.append(f'"{business_name}" CEO OR owner OR founder')
+            search_queries.append(
+                f'"{business_name}" CEO OR owner OR founder'
+            )
             search_queries.append(f'"{business_name}" site:linkedin.com')
 
         for query in search_queries[:2]:
             try:
-                search_url = f"https://www.google.com/search?q={quote_plus(query)}"
-                await page.goto(search_url, wait_until="networkidle", timeout=15000)
+                search_url = (
+                    f"https://www.google.com/search?q={quote_plus(query)}"
+                )
+                await page.goto(
+                    search_url, wait_until="domcontentloaded", timeout=15000
+                )
                 await asyncio.sleep(2)
 
                 content = await page.content()
                 soup = BeautifulSoup(content, "html.parser")
 
-                # Look for LinkedIn profiles
                 for a in soup.find_all("a", href=True):
                     href = a["href"]
                     if "linkedin.com/in/" in href:
                         linkedin_url = href
                         if "/url?q=" in linkedin_url:
-                            linkedin_url = linkedin_url.split("/url?q=")[1].split("&")[0]
+                            linkedin_url = (
+                                linkedin_url.split("/url?q=")[1].split("&")[0]
+                            )
                         owner_info["owner_linkedin"] = linkedin_url
 
-                        # Try to extract name from link text
                         text = a.get_text(strip=True)
                         if text and "-" in text:
                             name = text.split("-")[0].strip()
@@ -619,15 +862,21 @@ class OwnerFinder:
                                 owner_info["owner_name"] = name
                         break
 
-                # Look for social profiles
                 socials = {}
                 for a in soup.find_all("a", href=True):
                     href = a["href"]
-                    for platform in ["facebook.com", "twitter.com", "x.com", "instagram.com"]:
+                    for platform in [
+                        "facebook.com",
+                        "twitter.com",
+                        "x.com",
+                        "instagram.com",
+                    ]:
                         if platform in href and platform not in socials:
                             clean_url = href
                             if "/url?q=" in clean_url:
-                                clean_url = clean_url.split("/url?q=")[1].split("&")[0]
+                                clean_url = (
+                                    clean_url.split("/url?q=")[1].split("&")[0]
+                                )
                             socials[platform] = clean_url
 
                 if socials:

@@ -124,7 +124,6 @@ async def start_scrape(req: ScrapeRequest, db: Session = Depends(get_db)):
             )
 
             scraper_progress[str(session_id)]["stage"] = "analyzing"
-            analyzer = WebsiteAnalyzer()
 
             saved_count = 0
             skipped_count = 0
@@ -139,10 +138,14 @@ async def start_scrape(req: ScrapeRequest, db: Session = Depends(get_db)):
                 # Analyze website if present
                 seo_data = {}
                 if biz.get("website") and req.module == "all_businesses":
-                    seo_data = await analyzer.analyze(biz["website"])
+                    try:
+                        seo_data = await WebsiteAnalyzer.analyze(biz["website"])
+                    except Exception as e:
+                        logger.warning(f"SEO analysis error for {biz['website']}: {e}")
+                        seo_data = {"seo_score": 0, "issues": ["Could not analyze website"], "recommendations": []}
 
                 # Analyze GMB
-                gmb_data = analyzer.analyze_gmb(biz)
+                gmb_data = WebsiteAnalyzer.analyze_gmb(biz)
 
                 # Find owner if requested
                 owner_data = {}
