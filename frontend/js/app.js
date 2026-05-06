@@ -136,11 +136,15 @@ async function scrapeGmbLink(e) {
 function showProgress(sessionId) {
     const overlay = document.getElementById('progress-overlay');
     overlay.classList.add('active');
+    const startTime = Date.now();
+    const INIT_TIMEOUT_MS = 90000; // 90 seconds timeout for initialization
+    let pollErrors = 0;
 
     const pollInterval = setInterval(async () => {
         try {
             const resp = await fetch(`${API}/api/scrape/progress/${sessionId}`);
             const data = await resp.json();
+            pollErrors = 0;
 
             const titleEl = document.getElementById('progress-title');
             const textEl = document.getElementById('progress-text');
@@ -149,6 +153,16 @@ function showProgress(sessionId) {
 
             if (data.stage === 'starting') {
                 textEl.textContent = 'Initializing browser...';
+                if (Date.now() - startTime > INIT_TIMEOUT_MS) {
+                    titleEl.textContent = 'Initialization Timeout';
+                    textEl.textContent = 'Browser failed to start. Check server logs for details.';
+                    detailEl.textContent = '';
+                    clearInterval(pollInterval);
+                    setTimeout(() => {
+                        overlay.classList.remove('active');
+                        document.getElementById('scrape-btn').disabled = false;
+                    }, 4000);
+                }
             } else if (data.stage === 'found_listings') {
                 textEl.textContent = `Found ${data.total} listings. Starting extraction...`;
             } else if (data.stage === 'scraping') {
@@ -176,6 +190,16 @@ function showProgress(sessionId) {
             } else if (data.stage === 'failed') {
                 titleEl.textContent = 'Scraping Failed';
                 textEl.textContent = data.error || 'An error occurred';
+                detailEl.textContent = '';
+                clearInterval(pollInterval);
+                setTimeout(() => {
+                    overlay.classList.remove('active');
+                    document.getElementById('scrape-btn').disabled = false;
+                }, 3000);
+            } else if (data.stage === 'unknown') {
+                titleEl.textContent = 'Scraping Failed';
+                textEl.textContent = 'Session not found. The scraper may have crashed.';
+                detailEl.textContent = '';
                 clearInterval(pollInterval);
                 setTimeout(() => {
                     overlay.classList.remove('active');
@@ -184,6 +208,18 @@ function showProgress(sessionId) {
             }
         } catch (e) {
             console.error('Progress poll error:', e);
+            pollErrors++;
+            if (pollErrors >= 5) {
+                const titleEl = document.getElementById('progress-title');
+                const textEl = document.getElementById('progress-text');
+                titleEl.textContent = 'Connection Lost';
+                textEl.textContent = 'Cannot reach the server. Please check the server is running.';
+                clearInterval(pollInterval);
+                setTimeout(() => {
+                    document.getElementById('progress-overlay').classList.remove('active');
+                    document.getElementById('scrape-btn').disabled = false;
+                }, 3000);
+            }
         }
     }, 2000);
 }

@@ -109,9 +109,12 @@ async def start_scrape(req: ScrapeRequest, db: Session = Depends(get_db)):
 
     async def run_scrape():
         scraper = GoogleMapsScraper()
-        db_local = next(get_db())
+        db_local = None
         try:
+            db_local = next(get_db())
+            logger.info(f"[ScrapeTask] Starting Playwright for session {session_id}")
             await scraper.start()
+            logger.info(f"[ScrapeTask] Playwright started, beginning search")
 
             async def progress_cb(data):
                 scraper_progress[str(session_id)] = data
@@ -264,7 +267,7 @@ async def start_scrape(req: ScrapeRequest, db: Session = Depends(get_db)):
                 }
 
             # Update session
-            sess = db_local.query(ScrapeSession).get(session_id)
+            sess = db_local.query(ScrapeSession).filter_by(id=session_id).first()
             if sess:
                 sess.status = "completed"
                 sess.total_found = len(businesses)
@@ -281,36 +284,56 @@ async def start_scrape(req: ScrapeRequest, db: Session = Depends(get_db)):
             }
 
         except Exception as e:
-            logger.error(f"Scrape task error: {e}")
-            sess = db_local.query(ScrapeSession).get(session_id)
-            if sess:
-                sess.status = "failed"
-                db_local.commit()
+            logger.error(f"[ScrapeTask] Error: {e}", exc_info=True)
+            if db_local:
+                try:
+                    sess = db_local.query(ScrapeSession).filter_by(id=session_id).first()
+                    if sess:
+                        sess.status = "failed"
+                        db_local.commit()
+                except Exception as db_err:
+                    logger.error(f"[ScrapeTask] DB update failed: {db_err}")
             scraper_progress[str(session_id)] = {
                 "stage": "failed",
-                "error": str(e),
+                "error": str(e) or "Scraper execution failed",
             }
         finally:
-            await scraper.stop()
-            db_local.close()
+            try:
+                await scraper.stop()
+            except Exception as stop_err:
+                logger.warning(f"[ScrapeTask] Stop error: {stop_err}")
+            if db_local:
+                try:
+                    db_local.close()
+                except Exception:
+                    pass
 
     def _run_in_thread():
         """Run scraper in a dedicated thread with its own event loop.
 
-        On Windows, SelectorEventLoop (uvicorn default) cannot create
-        subprocesses, which Playwright requires to launch Chromium.
-        Using a separate thread with ProactorEventLoop solves this
-        without disrupting uvicorn's HTTP serving.
+        On Windows, uvicorn sets WindowsSelectorEventLoopPolicy which
+        cannot create subprocesses.  Playwright needs subprocess support
+        to launch Chromium, so we explicitly create a ProactorEventLoop.
         """
-        if sys.platform == "win32":
-            loop = asyncio.ProactorEventLoop()
-        else:
-            loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
         try:
-            loop.run_until_complete(run_scrape())
-        finally:
-            loop.close()
+            logger.info(f"[ScrapeThread] Starting thread for session {session_id} (platform={sys.platform})")
+            if sys.platform == "win32":
+                loop = asyncio.ProactorEventLoop()
+            else:
+                loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            logger.info(f"[ScrapeThread] Event loop created: {type(loop).__name__}")
+            try:
+                loop.run_until_complete(run_scrape())
+            finally:
+                loop.close()
+            logger.info(f"[ScrapeThread] Completed for session {session_id}")
+        except BaseException as exc:
+            logger.error(f"[ScrapeThread] Fatal error for session {session_id}: {exc}", exc_info=True)
+            scraper_progress[str(session_id)] = {
+                "stage": "failed",
+                "error": str(exc) or "Scraper thread crashed unexpectedly",
+            }
 
     thread = threading.Thread(target=_run_in_thread, daemon=True)
     thread.start()
