@@ -31,13 +31,18 @@ export default function SearchPage() {
   function pollProgress(sid: string) {
     fetch(`/api/scrape/${sid}/progress`)
       .then((res) => res.json())
-      .then(async (data: ScrapeProgress) => {
+      .then((data: ScrapeProgress) => {
         setProgress(data);
         if (data.stage === "completed" || data.stage === "error") {
-          setIsSearching(false);
-          const leadsRes = await fetch(`/api/leads?session_id=${sid}&sort_by=overall_score&sort_order=DESC`);
-          const leadsData = await leadsRes.json();
-          setResults(leadsData.leads || []);
+          fetch(`/api/leads?session_id=${sid}&sort_by=overall_score&sort_order=DESC`)
+            .then((res) => res.json())
+            .then((leadsData) => {
+              setResults(leadsData.leads || []);
+              setIsSearching(false);
+            })
+            .catch(() => {
+              setIsSearching(false);
+            });
         } else {
           pollRef.current = setTimeout(() => pollProgress(sid), 2000);
         }
@@ -192,14 +197,23 @@ export default function SearchPage() {
       {isSearching && progress && (
         <div className="bg-[#1a1d27] border border-[#2a2d3a] rounded-xl p-6 mb-6">
           <div className="flex items-center gap-3 mb-4">
-            <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-green-500" />
+            {progress.stage !== "completed" && (
+              <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-green-500" />
+            )}
+            {progress.stage === "completed" && (
+              <svg className="w-5 h-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+            )}
             <span className="text-sm font-medium text-white">
+              {progress.stage === "starting" && "Starting scraper..."}
               {progress.stage === "launching_browser" && "Launching browser..."}
               {progress.stage === "loading_results" && "Loading Google Maps results..."}
               {progress.stage === "scrolling_results" && "Scrolling through results..."}
               {progress.stage === "found_listings" && `Found ${progress.total} listings. Starting analysis...`}
               {progress.stage === "scraping" && `Scraping business ${progress.scraped + progress.skipped}/${progress.total}...`}
               {progress.stage === "analyzing" && `Analyzing websites... ${progress.scraped}/${progress.total}`}
+              {progress.stage === "completed" && "Loading results..."}
             </span>
           </div>
           {progress.total > 0 && (
