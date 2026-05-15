@@ -1,22 +1,25 @@
-import Database from "better-sqlite3";
-import path from "path";
-import fs from "fs";
+import { Pool, type QueryResultRow } from "pg";
 
-const DB_DIR = path.join(process.cwd(), "data");
-const DB_PATH = path.join(DB_DIR, "leads.db");
+const DATABASE_URL =
+  process.env.DATABASE_URL ||
+  "postgresql://postgres:admin@localhost:5432/leadscraper";
 
-let db: Database.Database | null = null;
+let pool: Pool | null = null;
+let initialized = false;
 
-export function getDb(): Database.Database {
-  if (db) return db;
+function getPool(): Pool {
+  if (!pool) {
+    pool = new Pool({ connectionString: DATABASE_URL });
+  }
+  return pool;
+}
 
-  fs.mkdirSync(DB_DIR, { recursive: true });
+export async function initDb(): Promise<void> {
+  if (initialized) return;
 
-  db = new Database(DB_PATH);
-  db.pragma("journal_mode = WAL");
-  db.pragma("foreign_keys = ON");
+  const p = getPool();
 
-  db.exec(`
+  await p.query(`
     CREATE TABLE IF NOT EXISTS scrape_sessions (
       id TEXT PRIMARY KEY,
       niche TEXT NOT NULL,
@@ -25,8 +28,8 @@ export function getDb(): Database.Database {
       total_found INTEGER DEFAULT 0,
       total_scraped INTEGER DEFAULT 0,
       total_skipped INTEGER DEFAULT 0,
-      created_at TEXT DEFAULT (datetime('now')),
-      completed_at TEXT
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      completed_at TIMESTAMPTZ
     );
 
     CREATE TABLE IF NOT EXISTS leads (
@@ -35,7 +38,7 @@ export function getDb(): Database.Database {
       phone TEXT DEFAULT '',
       email TEXT DEFAULT '',
       website TEXT DEFAULT '',
-      has_website INTEGER DEFAULT 0,
+      has_website BOOLEAN DEFAULT FALSE,
       address TEXT DEFAULT '',
       area TEXT DEFAULT '',
       niche TEXT DEFAULT '',
@@ -50,9 +53,9 @@ export function getDb(): Database.Database {
       overall_score REAL DEFAULT 0,
       lead_type TEXT DEFAULT 'new',
 
-      has_ssl INTEGER DEFAULT 0,
-      has_mobile_viewport INTEGER DEFAULT 0,
-      has_schema INTEGER DEFAULT 0,
+      has_ssl BOOLEAN DEFAULT FALSE,
+      has_mobile_viewport BOOLEAN DEFAULT FALSE,
+      has_schema BOOLEAN DEFAULT FALSE,
       page_speed REAL,
       issues_count INTEGER DEFAULT 0,
       audit_report TEXT DEFAULT '{}',
@@ -64,15 +67,34 @@ export function getDb(): Database.Database {
       owner_name TEXT DEFAULT '',
 
       scrape_session_id TEXT REFERENCES scrape_sessions(id),
-      created_at TEXT DEFAULT (datetime('now')),
-      updated_at TEXT DEFAULT (datetime('now'))
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      updated_at TIMESTAMPTZ DEFAULT NOW()
     );
+  `);
 
+  await p.query(`
     CREATE INDEX IF NOT EXISTS idx_leads_niche_area ON leads(niche, area);
     CREATE INDEX IF NOT EXISTS idx_leads_overall_score ON leads(overall_score DESC);
     CREATE INDEX IF NOT EXISTS idx_leads_pipeline ON leads(pipeline_stage);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_name_gmb ON leads(business_name, gmb_link);
   `);
 
-  return db;
+  initialized = true;
+}
+
+export async function query<T extends QueryResultRow = QueryResultRow>(
+  text: string,
+  params?: (string | number | boolean | null)[]
+): Promise<T[]> {
+  await initDb();
+  const result = await getPool().query<T>(text, params);
+  return result.rows;
+}
+
+export async function queryOne<T extends QueryResultRow = QueryResultRow>(
+  text: string,
+  params?: (string | number | boolean | null)[]
+): Promise<T | null> {
+  const rows = await query<T>(text, params);
+  return rows[0] ?? null;
 }

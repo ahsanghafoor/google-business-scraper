@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDb } from "@/lib/db";
+import { query } from "@/lib/db";
 
 export async function GET(req: NextRequest) {
   try {
-    const db = getDb();
     const url = new URL(req.url);
 
     const niche = url.searchParams.get("niche");
@@ -12,28 +11,28 @@ export async function GET(req: NextRequest) {
 
     const conditions: string[] = [];
     const params: string[] = [];
+    let paramIdx = 1;
 
     if (niche) {
-      conditions.push("niche = ?");
+      conditions.push(`niche = $${paramIdx++}`);
       params.push(niche);
     }
     if (area) {
-      conditions.push("area = ?");
+      conditions.push(`area = $${paramIdx++}`);
       params.push(area);
     }
     if (leadType) {
-      conditions.push("lead_type = ?");
+      conditions.push(`lead_type = $${paramIdx++}`);
       params.push(leadType);
     }
 
     const whereClause =
       conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
-    const leads = db
-      .prepare(
-        `SELECT business_name, phone, email, website, address, area, niche, category, rating, review_count, overall_score, lead_type, approach_status, pipeline_stage, gmb_link, seo_score, gmb_score, issues_count, created_at FROM leads ${whereClause} ORDER BY overall_score DESC`
-      )
-      .all(...params) as Record<string, unknown>[];
+    const leads = await query<Record<string, unknown>>(
+      `SELECT business_name, phone, email, website, address, area, niche, category, rating, review_count, overall_score, lead_type, approach_status, pipeline_stage, gmb_link, seo_score, gmb_score, issues_count, created_at FROM leads ${whereClause} ORDER BY overall_score DESC`,
+      params
+    );
 
     const headers = [
       "Business Name",

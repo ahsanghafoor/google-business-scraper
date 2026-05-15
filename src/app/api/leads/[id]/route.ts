@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDb } from "@/lib/db";
+import { query, queryOne } from "@/lib/db";
 
 export async function GET(
   _req: NextRequest,
@@ -7,8 +7,7 @@ export async function GET(
 ) {
   try {
     const { id } = await params;
-    const db = getDb();
-    const lead = db.prepare("SELECT * FROM leads WHERE id = ?").get(id);
+    const lead = await queryOne("SELECT * FROM leads WHERE id = $1", [id]);
 
     if (!lead) {
       return NextResponse.json({ error: "Lead not found" }, { status: 404 });
@@ -30,7 +29,6 @@ export async function PATCH(
 ) {
   try {
     const { id } = await params;
-    const db = getDb();
     const body = await req.json();
 
     const allowedFields = [
@@ -45,10 +43,11 @@ export async function PATCH(
 
     const updates: string[] = [];
     const values: (string | number)[] = [];
+    let paramIdx = 1;
 
     for (const field of allowedFields) {
       if (body[field] !== undefined) {
-        updates.push(`${field} = ?`);
+        updates.push(`${field} = $${paramIdx++}`);
         values.push(body[field]);
       }
     }
@@ -60,14 +59,15 @@ export async function PATCH(
       );
     }
 
-    updates.push("updated_at = datetime('now')");
+    updates.push(`updated_at = NOW()`);
     values.push(id);
 
-    db.prepare(
-      `UPDATE leads SET ${updates.join(", ")} WHERE id = ?`
-    ).run(...values);
+    await query(
+      `UPDATE leads SET ${updates.join(", ")} WHERE id = $${paramIdx}`,
+      values
+    );
 
-    const updated = db.prepare("SELECT * FROM leads WHERE id = ?").get(id);
+    const updated = await queryOne("SELECT * FROM leads WHERE id = $1", [id]);
     return NextResponse.json(updated);
   } catch (error) {
     console.error("Lead update error:", error);
@@ -84,8 +84,7 @@ export async function DELETE(
 ) {
   try {
     const { id } = await params;
-    const db = getDb();
-    db.prepare("DELETE FROM leads WHERE id = ?").run(id);
+    await query("DELETE FROM leads WHERE id = $1", [id]);
     return NextResponse.json({ success: true });
   } catch (error) {
     console.error("Lead delete error:", error);

@@ -34,7 +34,7 @@ A full-stack Next.js application that scrapes Google Maps to find businesses wit
 - **Framework**: Next.js 16 (App Router, TypeScript)
 - **Scraper**: Puppeteer (headless Chromium)
 - **Analysis**: Cheerio (HTML parsing), fetch (HTTP requests)
-- **Database**: SQLite via better-sqlite3
+- **Database**: PostgreSQL (with Docker Compose + pgAdmin4)
 - **UI**: Tailwind CSS (dark theme)
 - **Scoring**: Custom heuristic algorithm
 
@@ -43,6 +43,7 @@ A full-stack Next.js application that scrapes Google Maps to find businesses wit
 ### Prerequisites
 - Node.js 18+
 - npm
+- Docker & Docker Compose (for PostgreSQL + pgAdmin4)
 
 ### Installation
 
@@ -51,8 +52,14 @@ A full-stack Next.js application that scrapes Google Maps to find businesses wit
 git clone <repo-url>
 cd google-business-scraper
 
+# Start PostgreSQL + pgAdmin4
+docker compose up -d
+
 # Install dependencies
 npm install
+
+# Copy env file (defaults work out of the box with Docker Compose)
+cp .env.example .env
 
 # Run the dev server
 npm run dev
@@ -60,10 +67,31 @@ npm run dev
 
 The app will be available at **http://localhost:3000**
 
+### pgAdmin4 — Database Admin
+
+Access pgAdmin4 at **http://localhost:5050**
+
+- **Email**: `admin@admin.com`
+- **Password**: `admin`
+
+To connect to the PostgreSQL database in pgAdmin4:
+1. Open http://localhost:5050 and login
+2. Right-click "Servers" → "Register" → "Server"
+3. **General tab** — Name: `LeadScraper`
+4. **Connection tab**:
+   - Host: `postgres` (if pgAdmin runs inside Docker) or `localhost` (if running pgAdmin externally)
+   - Port: `5432`
+   - Database: `leadscraper`
+   - Username: `postgres`
+   - Password: `admin`
+5. Click "Save"
+
 ### Windows Users
 The app is fully compatible with Windows. Just run:
 ```bash
+docker compose up -d
 npm install
+cp .env.example .env
 npm run dev
 ```
 
@@ -112,13 +140,14 @@ google-business-scraper/
 │   │   ├── ScoreBar.tsx
 │   │   └── LeadBadge.tsx
 │   ├── lib/
-│   │   ├── db.ts                # SQLite database
+│   │   ├── db.ts                # PostgreSQL connection pool
 │   │   ├── scraper.ts           # Google Maps scraper
 │   │   ├── analyzer.ts          # Website SEO analyzer
 │   │   └── scrape-manager.ts    # Scrape session orchestrator
 │   └── types/
 │       └── index.ts             # TypeScript types
-├── data/                        # SQLite database (auto-created)
+├── docker-compose.yml           # PostgreSQL + pgAdmin4
+├── .env.example                 # Environment variables
 ├── package.json
 └── README.md
 ```

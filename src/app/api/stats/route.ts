@@ -1,79 +1,60 @@
 import { NextResponse } from "next/server";
-import { getDb } from "@/lib/db";
+import { query, queryOne } from "@/lib/db";
 import type { Lead, DashboardStats } from "@/types";
 
 export async function GET() {
   try {
-    const db = getDb();
+    const totalLeadsRow = await queryOne<{ count: string }>(
+      "SELECT COUNT(*) as count FROM leads"
+    );
+    const totalLeads = parseInt(totalLeadsRow?.count || "0");
 
-    const totalLeads = (
-      db.prepare("SELECT COUNT(*) as count FROM leads").get() as {
-        count: number;
-      }
-    ).count;
+    const hotLeadsRow = await queryOne<{ count: string }>(
+      "SELECT COUNT(*) as count FROM leads WHERE lead_type = 'hot'"
+    );
+    const hotLeads = parseInt(hotLeadsRow?.count || "0");
 
-    const hotLeads = (
-      db
-        .prepare("SELECT COUNT(*) as count FROM leads WHERE lead_type = 'hot'")
-        .get() as { count: number }
-    ).count;
+    const warmLeadsRow = await queryOne<{ count: string }>(
+      "SELECT COUNT(*) as count FROM leads WHERE lead_type = 'warm'"
+    );
+    const warmLeads = parseInt(warmLeadsRow?.count || "0");
 
-    const warmLeads = (
-      db
-        .prepare("SELECT COUNT(*) as count FROM leads WHERE lead_type = 'warm'")
-        .get() as { count: number }
-    ).count;
+    const coldLeadsRow = await queryOne<{ count: string }>(
+      "SELECT COUNT(*) as count FROM leads WHERE lead_type = 'cold'"
+    );
+    const coldLeads = parseInt(coldLeadsRow?.count || "0");
 
-    const coldLeads = (
-      db
-        .prepare("SELECT COUNT(*) as count FROM leads WHERE lead_type = 'cold'")
-        .get() as { count: number }
-    ).count;
+    const totalSessionsRow = await queryOne<{ count: string }>(
+      "SELECT COUNT(*) as count FROM scrape_sessions"
+    );
+    const totalSessions = parseInt(totalSessionsRow?.count || "0");
 
-    const totalSessions = (
-      db.prepare("SELECT COUNT(*) as count FROM scrape_sessions").get() as {
-        count: number;
-      }
-    ).count;
+    const leadsWithWebsiteRow = await queryOne<{ count: string }>(
+      "SELECT COUNT(*) as count FROM leads WHERE has_website = TRUE"
+    );
+    const leadsWithWebsite = parseInt(leadsWithWebsiteRow?.count || "0");
 
-    const leadsWithWebsite = (
-      db
-        .prepare(
-          "SELECT COUNT(*) as count FROM leads WHERE has_website = 1"
-        )
-        .get() as { count: number }
-    ).count;
+    const leadsWithoutWebsiteRow = await queryOne<{ count: string }>(
+      "SELECT COUNT(*) as count FROM leads WHERE has_website = FALSE"
+    );
+    const leadsWithoutWebsite = parseInt(leadsWithoutWebsiteRow?.count || "0");
 
-    const leadsWithoutWebsite = (
-      db
-        .prepare(
-          "SELECT COUNT(*) as count FROM leads WHERE has_website = 0"
-        )
-        .get() as { count: number }
-    ).count;
+    const avgScoreRow = await queryOne<{ avg: string | null }>(
+      "SELECT AVG(overall_score) as avg FROM leads"
+    );
+    const avgScore = Math.round(parseFloat(avgScoreRow?.avg || "0"));
 
-    const avgScoreResult = db
-      .prepare("SELECT AVG(overall_score) as avg FROM leads")
-      .get() as { avg: number | null };
-    const avgScore = Math.round(avgScoreResult.avg || 0);
+    const recentLeads = (await query(
+      "SELECT * FROM leads ORDER BY created_at DESC LIMIT 10"
+    )) as Lead[];
 
-    const recentLeads = db
-      .prepare(
-        "SELECT * FROM leads ORDER BY created_at DESC LIMIT 10"
-      )
-      .all() as Lead[];
+    const niches = (await query(
+      "SELECT niche, COUNT(*) as count FROM leads GROUP BY niche ORDER BY count DESC LIMIT 10"
+    )) as { niche: string; count: string }[];
 
-    const niches = db
-      .prepare(
-        "SELECT niche, COUNT(*) as count FROM leads GROUP BY niche ORDER BY count DESC LIMIT 10"
-      )
-      .all() as { niche: string; count: number }[];
-
-    const pipeline = db
-      .prepare(
-        "SELECT pipeline_stage as stage, COUNT(*) as count FROM leads GROUP BY pipeline_stage ORDER BY count DESC"
-      )
-      .all() as { stage: string; count: number }[];
+    const pipeline = (await query(
+      "SELECT pipeline_stage as stage, COUNT(*) as count FROM leads GROUP BY pipeline_stage ORDER BY count DESC"
+    )) as { stage: string; count: string }[];
 
     const stats: DashboardStats = {
       total_leads: totalLeads,
@@ -85,8 +66,8 @@ export async function GET() {
       leads_without_website: leadsWithoutWebsite,
       avg_score: avgScore,
       recent_leads: recentLeads,
-      niches,
-      pipeline,
+      niches: niches.map((n) => ({ niche: n.niche, count: parseInt(n.count) })),
+      pipeline: pipeline.map((p) => ({ stage: p.stage, count: parseInt(p.count) })),
     };
 
     return NextResponse.json(stats);

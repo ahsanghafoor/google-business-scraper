@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getDb } from "@/lib/db";
+import { query, queryOne } from "@/lib/db";
 
 export async function GET(req: NextRequest) {
   try {
-    const db = getDb();
     const url = new URL(req.url);
 
     const niche = url.searchParams.get("niche");
@@ -20,43 +19,44 @@ export async function GET(req: NextRequest) {
     const offset = parseInt(url.searchParams.get("offset") || "0");
 
     const conditions: string[] = [];
-    const params: (string | number)[] = [];
+    const params: (string | number | boolean)[] = [];
+    let paramIdx = 1;
 
     if (niche) {
-      conditions.push("niche = ?");
+      conditions.push(`niche = $${paramIdx++}`);
       params.push(niche);
     }
     if (area) {
-      conditions.push("area = ?");
+      conditions.push(`area = $${paramIdx++}`);
       params.push(area);
     }
     if (leadType) {
-      conditions.push("lead_type = ?");
+      conditions.push(`lead_type = $${paramIdx++}`);
       params.push(leadType);
     }
     if (status) {
-      conditions.push("approach_status = ?");
+      conditions.push(`approach_status = $${paramIdx++}`);
       params.push(status);
     }
     if (pipeline) {
-      conditions.push("pipeline_stage = ?");
+      conditions.push(`pipeline_stage = $${paramIdx++}`);
       params.push(pipeline);
     }
     if (hasWebsite === "true") {
-      conditions.push("has_website = 1");
+      conditions.push("has_website = TRUE");
     } else if (hasWebsite === "false") {
-      conditions.push("has_website = 0");
+      conditions.push("has_website = FALSE");
     }
     if (sessionId) {
-      conditions.push("scrape_session_id = ?");
+      conditions.push(`scrape_session_id = $${paramIdx++}`);
       params.push(sessionId);
     }
     if (search) {
       conditions.push(
-        "(business_name LIKE ? OR address LIKE ? OR category LIKE ?)"
+        `(business_name ILIKE $${paramIdx} OR address ILIKE $${paramIdx} OR category ILIKE $${paramIdx})`
       );
-      const searchTerm = `%${search}%`;
-      params.push(searchTerm, searchTerm, searchTerm);
+      params.push(`%${search}%`);
+      paramIdx++;
     }
 
     const whereClause =
@@ -74,19 +74,20 @@ export async function GET(req: NextRequest) {
     const safeSortBy = allowedSort.includes(sortBy) ? sortBy : "overall_score";
     const safeSortOrder = sortOrder.toUpperCase() === "ASC" ? "ASC" : "DESC";
 
-    const countResult = db
-      .prepare(`SELECT COUNT(*) as count FROM leads ${whereClause}`)
-      .get(...params) as { count: number };
+    const countResult = await queryOne<{ count: string }>(
+      `SELECT COUNT(*) as count FROM leads ${whereClause}`,
+      params
+    );
 
-    const leads = db
-      .prepare(
-        `SELECT * FROM leads ${whereClause} ORDER BY ${safeSortBy} ${safeSortOrder} LIMIT ? OFFSET ?`
-      )
-      .all(...params, limit, offset);
+    const leadsParams = [...params, limit, offset];
+    const leads = await query(
+      `SELECT * FROM leads ${whereClause} ORDER BY ${safeSortBy} ${safeSortOrder} LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
+      leadsParams
+    );
 
     return NextResponse.json({
       leads,
-      total: countResult.count,
+      total: parseInt(countResult?.count || "0"),
       limit,
       offset,
     });

@@ -1,5 +1,5 @@
 import { v4 as uuidv4 } from "uuid";
-import { getDb } from "./db";
+import { query } from "./db";
 import { scrapeGoogleMaps, type ScrapeProgressData } from "./scraper";
 import { analyzeWebsite, analyzeGMB, calculateOverallScore } from "./analyzer";
 
@@ -15,12 +15,12 @@ export async function startScrapeSession(
   area: string,
   maxResults: number = 20
 ): Promise<string> {
-  const db = getDb();
   const sessionId = uuidv4();
 
-  db.prepare(
-    `INSERT INTO scrape_sessions (id, niche, area, status) VALUES (?, ?, ?, 'running')`
-  ).run(sessionId, niche, area);
+  await query(
+    `INSERT INTO scrape_sessions (id, niche, area, status) VALUES ($1, $2, $3, 'running')`,
+    [sessionId, niche, area]
+  );
 
   progressMap.set(sessionId, {
     stage: "starting",
@@ -30,26 +30,27 @@ export async function startScrapeSession(
   });
 
   // Get existing GMB links for dedup
-  const existing = db
-    .prepare(
-      `SELECT gmb_link FROM leads WHERE niche = ? AND area = ? AND gmb_link != ''`
-    )
-    .all(niche, area) as { gmb_link: string }[];
+  const existing = await query<{ gmb_link: string }>(
+    `SELECT gmb_link FROM leads WHERE niche = $1 AND area = $2 AND gmb_link != ''`,
+    [niche, area]
+  );
   const existingLinks = new Set(existing.map((e) => e.gmb_link));
 
   // Existing names for dedup
-  const existingNames = db
-    .prepare(`SELECT LOWER(business_name) as name FROM leads WHERE area = ?`)
-    .all(area) as { name: string }[];
+  const existingNames = await query<{ name: string }>(
+    `SELECT LOWER(business_name) as name FROM leads WHERE area = $1`,
+    [area]
+  );
   const existingNameSet = new Set(existingNames.map((e) => e.name));
 
   // Run scraping in background
   runScrape(sessionId, niche, area, existingLinks, existingNameSet, maxResults).catch(
-    (err) => {
+    async (err) => {
       console.error("Scrape error:", err);
-      db.prepare(
-        `UPDATE scrape_sessions SET status = 'failed' WHERE id = ?`
-      ).run(sessionId);
+      await query(
+        `UPDATE scrape_sessions SET status = 'failed' WHERE id = $1`,
+        [sessionId]
+      );
       progressMap.set(sessionId, {
         stage: "error",
         total: 0,
@@ -70,8 +71,6 @@ async function runScrape(
   existingNameSet: Set<string>,
   maxResults: number
 ): Promise<void> {
-  const db = getDb();
-
   const businesses = await scrapeGoogleMaps(
     niche,
     area,
@@ -92,20 +91,6 @@ async function runScrape(
 
   let savedCount = 0;
   let skippedCount = 0;
-
-  const insertStmt = db.prepare(`
-    INSERT OR IGNORE INTO leads (
-      id, business_name, phone, email, website, has_website, address,
-      area, niche, gmb_link, category, rating, review_count,
-      seo_score, gmb_score, website_score, overall_score, lead_type,
-      has_ssl, has_mobile_viewport, has_schema, page_speed, issues_count,
-      audit_report, approach_status, pipeline_stage, notes, owner_name,
-      scrape_session_id
-    ) VALUES (
-      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-      ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-    )
-  `);
 
   for (let i = 0; i < businesses.length; i++) {
     const biz = businesses[i];
@@ -181,36 +166,50 @@ async function runScrape(
     const leadId = uuidv4();
 
     try {
-      insertStmt.run(
-        leadId,
-        biz.business_name,
-        biz.phone,
-        biz.email,
-        biz.website,
-        biz.has_website ? 1 : 0,
-        biz.address,
-        area,
-        niche,
-        biz.gmb_link,
-        biz.category,
-        biz.rating,
-        biz.review_count,
-        seoScore,
-        gmbScore,
-        websiteScore,
-        overallScore,
-        leadType,
-        hasSsl ? 1 : 0,
-        hasMobileViewport ? 1 : 0,
-        hasSchema ? 1 : 0,
-        pageSpeed,
-        issuesCount,
-        auditReport,
-        "not_contacted",
-        "new",
-        "",
-        "",
-        sessionId
+      await query(
+        `INSERT INTO leads (
+          id, business_name, phone, email, website, has_website, address,
+          area, niche, gmb_link, category, rating, review_count,
+          seo_score, gmb_score, website_score, overall_score, lead_type,
+          has_ssl, has_mobile_viewport, has_schema, page_speed, issues_count,
+          audit_report, approach_status, pipeline_stage, notes, owner_name,
+          scrape_session_id
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
+          $14, $15, $16, $17, $18, $19, $20, $21, $22, $23,
+          $24, $25, $26, $27, $28, $29
+        ) ON CONFLICT DO NOTHING`,
+        [
+          leadId,
+          biz.business_name,
+          biz.phone,
+          biz.email,
+          biz.website,
+          biz.has_website,
+          biz.address,
+          area,
+          niche,
+          biz.gmb_link,
+          biz.category,
+          biz.rating,
+          biz.review_count,
+          seoScore,
+          gmbScore,
+          websiteScore,
+          overallScore,
+          leadType,
+          hasSsl,
+          hasMobileViewport,
+          hasSchema,
+          pageSpeed,
+          issuesCount,
+          auditReport,
+          "not_contacted",
+          "new",
+          "",
+          "",
+          sessionId,
+        ]
       );
       savedCount++;
       existingNameSet.add(biz.business_name.toLowerCase());
@@ -221,9 +220,10 @@ async function runScrape(
   }
 
   // Update session
-  db.prepare(
-    `UPDATE scrape_sessions SET status = 'completed', total_found = ?, total_scraped = ?, total_skipped = ?, completed_at = datetime('now') WHERE id = ?`
-  ).run(businesses.length, savedCount, skippedCount, sessionId);
+  await query(
+    `UPDATE scrape_sessions SET status = 'completed', total_found = $1, total_scraped = $2, total_skipped = $3, completed_at = NOW() WHERE id = $4`,
+    [businesses.length, savedCount, skippedCount, sessionId]
+  );
 
   progressMap.set(sessionId, {
     stage: "completed",
