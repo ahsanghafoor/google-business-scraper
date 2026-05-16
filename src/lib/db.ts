@@ -7,6 +7,32 @@ const DATABASE_URL =
 let pool: Pool | null = null;
 let initialized = false;
 
+function parseDbUrl(url: string): { base: string; dbName: string } {
+  const lastSlash = url.lastIndexOf("/");
+  return {
+    base: url.substring(0, lastSlash) + "/postgres",
+    dbName: url.substring(lastSlash + 1).split("?")[0],
+  };
+}
+
+async function ensureDatabaseExists(): Promise<void> {
+  const { base, dbName } = parseDbUrl(DATABASE_URL);
+  const adminPool = new Pool({ connectionString: base });
+
+  try {
+    const result = await adminPool.query(
+      "SELECT 1 FROM pg_database WHERE datname = $1",
+      [dbName]
+    );
+    if (result.rows.length === 0) {
+      await adminPool.query(`CREATE DATABASE "${dbName}"`);
+      console.log(`Database "${dbName}" created successfully`);
+    }
+  } finally {
+    await adminPool.end();
+  }
+}
+
 function getPool(): Pool {
   if (!pool) {
     pool = new Pool({ connectionString: DATABASE_URL });
@@ -16,6 +42,23 @@ function getPool(): Pool {
 
 export async function initDb(): Promise<void> {
   if (initialized) return;
+
+  try {
+    const p = getPool();
+    await p.query("SELECT 1");
+  } catch (err: unknown) {
+    const pgErr = err as { code?: string };
+    if (pgErr.code === "3D000") {
+      // Database does not exist — create it and reconnect
+      await ensureDatabaseExists();
+      if (pool) {
+        await pool.end();
+        pool = null;
+      }
+    } else {
+      throw err;
+    }
+  }
 
   const p = getPool();
 
@@ -80,6 +123,7 @@ export async function initDb(): Promise<void> {
   `);
 
   initialized = true;
+  console.log("Database initialized successfully");
 }
 
 export async function query<T extends QueryResultRow = QueryResultRow>(

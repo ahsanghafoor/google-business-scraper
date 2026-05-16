@@ -34,7 +34,7 @@ A full-stack Next.js application that scrapes Google Maps to find businesses wit
 - **Framework**: Next.js 16 (App Router, TypeScript)
 - **Scraper**: Puppeteer (headless Chromium)
 - **Analysis**: Cheerio (HTML parsing), fetch (HTTP requests)
-- **Database**: PostgreSQL (with Docker Compose + pgAdmin4)
+- **Database**: PostgreSQL (auto-creates database & tables on startup)
 - **UI**: Tailwind CSS (dark theme)
 - **Scoring**: Custom heuristic algorithm
 
@@ -43,7 +43,7 @@ A full-stack Next.js application that scrapes Google Maps to find businesses wit
 ### Prerequisites
 - Node.js 18+
 - npm
-- Docker & Docker Compose (for PostgreSQL + pgAdmin4)
+- PostgreSQL installed and running (the app auto-creates the database and tables)
 
 ### Installation
 
@@ -52,34 +52,48 @@ A full-stack Next.js application that scrapes Google Maps to find businesses wit
 git clone <repo-url>
 cd google-business-scraper
 
-# Start PostgreSQL + pgAdmin4
-docker compose up -d
-
 # Install dependencies
 npm install
 
-# Copy env file (defaults work out of the box with Docker Compose)
-cp .env.example .env
+# (Optional) Set up the database manually beforehand
+npm run setup-db
 
-# Run the dev server
+# Run the dev server (auto-creates database & tables if they don't exist)
 npm run dev
 ```
 
 The app will be available at **http://localhost:3000**
 
+The database and all tables are created **automatically** on first startup. No manual setup needed — just make sure PostgreSQL is running.
+
+### Database Configuration
+
+Defaults (works out of the box if your PostgreSQL uses these):
+- Host: `localhost`
+- Port: `5432`
+- Database: `leadscraper` (auto-created)
+- Username: `postgres`
+- Password: `admin`
+
+To customize, set the `DATABASE_URL` environment variable:
+```bash
+DATABASE_URL=postgresql://myuser:mypass@localhost:5432/mydb npm run dev
+```
+
+Or copy the `.env.example` file:
+```bash
+cp .env.example .env
+# Edit .env with your connection details
+```
+
 ### pgAdmin4 — Database Admin
 
-Access pgAdmin4 at **http://localhost:5050**
-
-- **Email**: `admin@admin.com`
-- **Password**: `admin`
-
-To connect to the PostgreSQL database in pgAdmin4:
-1. Open http://localhost:5050 and login
+If you have pgAdmin4 installed, connect to the database with:
+1. Open pgAdmin4
 2. Right-click "Servers" → "Register" → "Server"
 3. **General tab** — Name: `LeadScraper`
 4. **Connection tab**:
-   - Host: `postgres` (if pgAdmin runs inside Docker) or `localhost` (if running pgAdmin externally)
+   - Host: `localhost`
    - Port: `5432`
    - Database: `leadscraper`
    - Username: `postgres`
@@ -89,9 +103,7 @@ To connect to the PostgreSQL database in pgAdmin4:
 ### Windows Users
 The app is fully compatible with Windows. Just run:
 ```bash
-docker compose up -d
 npm install
-cp .env.example .env
 npm run dev
 ```
 
@@ -146,7 +158,8 @@ google-business-scraper/
 │   │   └── scrape-manager.ts    # Scrape session orchestrator
 │   └── types/
 │       └── index.ts             # TypeScript types
-├── docker-compose.yml           # PostgreSQL + pgAdmin4
+├── scripts/
+│   └── setup-db.mjs             # Database setup script
 ├── .env.example                 # Environment variables
 ├── package.json
 └── README.md
